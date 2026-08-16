@@ -29,17 +29,11 @@
 }
 
 .custom-pulse-marker {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
+  background: transparent !important;
+  border: none !important;
 }
 
-.custom-pulse-marker .ring-pulse {
-  position: absolute;
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
+.ring-pulse {
   animation: radar-ping 2.5s cubic-bezier(0, 0, 0.2, 1) infinite;
 }
 

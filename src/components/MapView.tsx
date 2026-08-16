@@ -26,6 +26,7 @@ export const MapView: React.FC<MapViewProps> = ({
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersRef = useRef<{ [id: string]: L.Marker }>({});
   const layerGroupRef = useRef<L.LayerGroup | null>(null);
+  const prevSelectedRegionIdRef = useRef<string | null>(null);
 
   // Initialize Map once
   useEffect(() => {
@@ -107,22 +108,39 @@ export const MapView: React.FC<MapViewProps> = ({
         badgeBg = 'bg-emerald-500';
       }
 
-      // Create Custom Pulse DivIcon
+      // Create Custom Pulse DivIcon anchored precisely at coordinate origin using translate(-50%, -50%)
+      const size = isSelected ? 36 : 26;
+      const dotSize = isSelected ? 20 : 14;
+
       const customIcon = L.divIcon({
         className: 'custom-pulse-marker',
-        iconSize: isSelected ? [36, 36] : [26, 26],
-        iconAnchor: isSelected ? [18, 18] : [13, 13],
+        iconSize: [0, 0],
+        iconAnchor: [0, 0],
         html: `
-          <div style="position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; cursor: pointer;">
-            ${isSelected ? `<div class="ring-pulse" style="background-color: ${ringColor};"></div>` : ''}
+          <div style="
+            position: absolute;
+            top: 0;
+            left: 0;
+            transform: translate(-50%, -50%);
+            width: ${size}px;
+            height: ${size}px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            pointer-events: auto;
+          ">
+            ${isSelected ? `<div class="ring-pulse" style="position: absolute; inset: 0; border-radius: 50%; background-color: ${ringColor};"></div>` : ''}
             <div style="
-              width: ${isSelected ? '20px' : '14px'};
-              height: ${isSelected ? '20px' : '14px'};
+              width: ${dotSize}px;
+              height: ${dotSize}px;
               border-radius: 50%;
               background-color: ${colorClass};
               border: 2.5px solid #ffffff;
               box-shadow: 0 0 14px ${colorClass}, 0 2px 8px rgba(0,0,0,0.5);
               transition: transform 0.2s ease;
+              position: relative;
+              z-index: 1;
             "></div>
           </div>
         `,
@@ -154,7 +172,7 @@ export const MapView: React.FC<MapViewProps> = ({
         </div>
       `, {
         direction: 'top',
-        offset: [0, -10],
+        offset: [0, isSelected ? -20 : -15],
         opacity: 1,
         className: 'custom-leaflet-tooltip',
       });
@@ -192,35 +210,49 @@ export const MapView: React.FC<MapViewProps> = ({
           const [stLat, stLng] = region.resourceStaging.coordinates;
           const stagingIcon = L.divIcon({
             className: 'staging-marker',
-            iconSize: [22, 22],
-            iconAnchor: [11, 11],
+            iconSize: [0, 0],
+            iconAnchor: [0, 0],
             html: `
               <div style="
-                width: 18px;
-                height: 18px;
-                background-color: #10b981;
-                border: 2px solid white;
-                border-radius: 4px;
+                position: absolute;
+                top: 0;
+                left: 0;
+                transform: translate(-50%, -50%);
+                width: 22px;
+                height: 22px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                box-shadow: 0 0 10px #10b981;
-                font-size: 10px;
-                color: white;
-                font-weight: bold;
-              ">S</div>
+                pointer-events: auto;
+              ">
+                <div style="
+                  width: 18px;
+                  height: 18px;
+                  background-color: #10b981;
+                  border: 2px solid white;
+                  border-radius: 4px;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  box-shadow: 0 0 10px #10b981;
+                  font-size: 10px;
+                  color: white;
+                  font-weight: bold;
+                ">S</div>
+              </div>
             `,
           });
 
           L.marker([stLat, stLng], { icon: stagingIcon })
-            .bindTooltip(`<b>Staging Depot:</b> ${region.resourceStaging.name}`, { direction: 'bottom' })
+            .bindTooltip(`<b>Staging Depot:</b> ${region.resourceStaging.name}`, { direction: 'bottom', offset: [0, 12] })
             .addTo(layerGroup);
         }
       }
     });
 
-    // Pan map toward selected region smoothly
-    if (selectedRegion && map) {
+    // Pan map toward selected region smoothly only when selectedRegion.id changes
+    if (selectedRegion && map && prevSelectedRegionIdRef.current !== selectedRegion.id) {
+      prevSelectedRegionIdRef.current = selectedRegion.id;
       map.flyTo([selectedRegion.lat, selectedRegion.lng], selectedRegion.zoomLevel || 8, {
         duration: 1.2,
         easeLinearity: 0.25,
