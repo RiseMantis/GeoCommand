@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import http from 'http';
 
 dotenv.config();
 
@@ -16,7 +17,65 @@ async function startServer() {
 
   app.use(express.json());
 
-  // In-memory audit logs store
+  // ── Python FastAPI reverse proxy ──────────────────────────
+  // Forwards /py-api/* → http://localhost:8000/* so the React
+  // frontend can reach the Python backend through the same origin.
+  const PYTHON_API = 'http://localhost:8000';
+
+  function proxyToPython(req: express.Request, res: express.Response): void {
+    // Strip the /py-api prefix when forwarding
+    const targetPath = req.url.replace(/^\/py-api/, '') || '/';
+
+    // Build body buffer upfront so we know Content-Length before opening the socket
+    let bodyBuf: Buffer | null = null;
+    if (req.body && Object.keys(req.body).length > 0) {
+      bodyBuf = Buffer.from(JSON.stringify(req.body), 'utf-8');
+    }
+
+    // Build forwarded headers — override content fields if we have a body
+    const forwardHeaders: Record<string, string | string[] | undefined> = {
+      ...req.headers,
+      host: 'localhost:8000',
+    };
+    if (bodyBuf) {
+      forwardHeaders['content-type'] = 'application/json';
+      forwardHeaders['content-length'] = String(bodyBuf.byteLength);
+    } else {
+      // Remove content headers so the upstream doesn't wait for a body
+      delete forwardHeaders['content-length'];
+      delete forwardHeaders['transfer-encoding'];
+    }
+
+    const options = {
+      hostname: 'localhost',
+      port: 8000,
+      path: targetPath,
+      method: req.method,
+      headers: forwardHeaders,
+    };
+
+    const proxyReq = http.request(options, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+      proxyRes.pipe(res, { end: true });
+    });
+
+    proxyReq.on('error', (err) => {
+      if (!res.headersSent) {
+        res.status(503).json({ error: 'Python backend unavailable', detail: err.message });
+      }
+      console.warn('[proxy] Python backend unreachable:', err.message);
+    });
+
+    if (bodyBuf) {
+      proxyReq.write(bodyBuf);
+    }
+    proxyReq.end();
+  }
+
+  // Register proxy for all methods on /py-api/*
+  app.all('/py-api/*', proxyToPython);
+
+
   const auditLogsStore: Array<{
     id: string;
     timestamp: string;

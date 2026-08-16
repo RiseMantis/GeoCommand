@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Search, Sparkles, Loader2, X, Compass, ArrowRight } from 'lucide-react';
+import { Search, Sparkles, Loader2, X, ArrowRight } from 'lucide-react';
 import { RegionData } from '../types';
+import { nlQuery, getToken } from '../api';
 
 interface SearchBarProps {
   onSearchResult: (regionId: string, explanation?: string) => void;
@@ -30,8 +31,28 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSearchResult, regions })
     setLoading(true);
     setShowSuggestions(false);
 
+    // ── Path 1: Python backend NL query (JWT-authenticated, logs to audit) ──
+    if (getToken()) {
+      try {
+        const result = await nlQuery(searchQuery);
+        if (result && result.matched_region_id) {
+          const region = regions.find((r) => r.id === result.matched_region_id);
+          onSearchResult(result.matched_region_id, result.reason);
+          setSearchFeedback({
+            text: result.reason || `Matched region ${region?.name || result.matched_region_id}`,
+            source: result.source === 'gemini-ai' ? 'Gemini 3.7 Cross-Modal AI' : 'GeoScan NL Engine',
+            matchedRegionName: region?.name,
+          });
+          setLoading(false);
+          return;
+        }
+      } catch (err) {
+        console.warn('Python NL query failed, trying Gemini endpoint:', err);
+      }
+    }
+
+    // ── Path 2: Node server Gemini endpoint (no auth required, best-effort) ──
     try {
-      // Call server-side API endpoint with Gemini processing
       const response = await fetch('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -53,10 +74,10 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSearchResult, regions })
         }
       }
     } catch (err) {
-      console.warn('API search failed, evaluating client fallback:', err);
+      console.warn('Gemini API search failed, using client fallback:', err);
     }
 
-    // Client-side fallback keyword search
+    // ── Path 3: Client-side keyword fallback ────────────────────────────────
     const q = searchQuery.toLowerCase();
     let target = regions[0];
     if (q.includes('landslide') || q.includes('wayanad') || q.includes('kerala') || q.includes('slope')) {

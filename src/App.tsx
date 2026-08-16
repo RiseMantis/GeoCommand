@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { MOCK_REGIONS, INITIAL_AUDIT_LOGS } from './data/mockData';
 import { RegionData, UserRole, HazardCategory, AuditLogEntry } from './types';
 import { Header } from './components/Header';
@@ -15,9 +15,74 @@ import { TacticalPlanModal } from './components/TacticalPlanModal';
 import { LayerControlModal } from './components/LayerControlModal';
 import { SettingsModal } from './components/SettingsModal';
 import { NotificationsModal } from './components/NotificationsModal';
-import { CheckCircle2, AlertCircle, Sparkles } from 'lucide-react';
+import { LoginScreen } from './components/LoginScreen';
+import { CheckCircle2, AlertCircle, Server, ServerOff } from 'lucide-react';
+import {
+  AuthUser,
+  checkBackendHealth,
+  fetchAuditLog,
+  issueAlert,
+  clearAuth,
+  getCurrentUser,
+  ApiAuditEntry,
+} from './api';
+
+// ── Helpers: map backend roles → frontend roles ────────────────
+function backendRoleToFrontend(role: string): UserRole {
+  if (role === 'administrator') return 'Administrator';
+  if (role === 'coordinator') return 'Coordinator';
+  return 'Analyst';
+}
+
+// ── Helpers: map backend audit entries → frontend AuditLogEntry ─
+function mapApiAuditEntry(e: ApiAuditEntry): AuditLogEntry {
+  const roleMap: Record<string, UserRole> = {
+    administrator: 'Administrator',
+    coordinator: 'Coordinator',
+    analyst: 'Analyst',
+    pio: 'Analyst',
+    system: 'Administrator',
+  };
+  const categoryMap: Record<string, AuditLogEntry['category']> = {
+    queried_region: 'QUERY',
+    nl_query: 'QUERY',
+    issued_alert: 'ALERT',
+    alert_status_changed: 'ALERT',
+    hash_mismatch_detected: 'SECURITY',
+    cross_checked_against_rainfall_implausible: 'SECURITY',
+    tile_rejected: 'SECURITY',
+    forensic_report_logged: 'SECURITY',
+    blocked_spoofed_tile: 'SECURITY',
+    resource_staging_plan_dispatch: 'TELEMETRY',
+    integrity_daemon_verified: 'SECURITY',
+    role_change: 'ROLE_CHANGE',
+  };
+  const statusMap: Record<string, AuditLogEntry['status']> = {
+    hash_mismatch_detected: 'BLOCKED',
+    cross_checked_against_rainfall_implausible: 'WARNING',
+    tile_rejected: 'BLOCKED',
+    forensic_report_logged: 'BLOCKED',
+  };
+  return {
+    id: e.id,
+    timestamp: e.timestamp.replace('T', ' ').substring(0, 19) + ' UTC',
+    role: roleMap[e.actor_role] ?? 'Analyst',
+    actor: (e.detail as Record<string, string>)?.actor_name ?? (e.actor_role === 'system' ? 'Integrity Daemon' : e.actor_role),
+    action: e.action.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+    category: categoryMap[e.action] ?? 'QUERY',
+    regionId: (e.detail as Record<string, string>)?.region_id,
+    status: statusMap[e.action] ?? 'SUCCESS',
+    details: (e.detail as Record<string, string>)?.message ?? (e.detail as Record<string, string>)?.note ?? JSON.stringify(e.detail ?? {}),
+    hash: `0x${e.id.replace(/-/g, '').substring(0, 16)}`,
+  };
+}
 
 export default function App() {
+  // ── Auth state ──────────────────────────────────────────────
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [backendOnline, setBackendOnline] = useState<boolean | null>(null); // null = checking
+
+  // ── App state ───────────────────────────────────────────────
   const [regions, setRegions] = useState<RegionData[]>(MOCK_REGIONS);
   const [selectedRegion, setSelectedRegion] = useState<RegionData>(MOCK_REGIONS[0]);
   const [role, setRole] = useState<UserRole>('Analyst');
@@ -27,14 +92,14 @@ export default function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ title: string; desc: string; type: 'success' | 'warning' } | null>(null);
 
-  // Modal States
+  // ── Modal States ────────────────────────────────────────────
   const [isAlertModalOpen, setIsAlertModalOpen] = useState(false);
   const [isTacticalModalOpen, setIsTacticalModalOpen] = useState(false);
   const [isLayerModalOpen, setIsLayerModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isNotificationsModalOpen, setIsNotificationsModalOpen] = useState(false);
 
-  // Active Map Layers
+  // ── Active Map Layers ───────────────────────────────────────
   const [activeLayers, setActiveLayers] = useState({
     sarInundation: true,
     radarRainfall: true,
@@ -42,6 +107,35 @@ export default function App() {
     evacuationZones: true,
   });
 
+  // ── Backend health check on mount ──────────────────────────
+  useEffect(() => {
+    checkBackendHealth().then((ok) => setBackendOnline(ok));
+  }, []);
+
+  // ── Sync audit log from backend when logged in ──────────────
+  const syncAuditLog = useCallback(async () => {
+    if (!authUser) return;
+    const entries = await fetchAuditLog(50, 0);
+    if (entries.length > 0) {
+      setAuditLogs(entries.map(mapApiAuditEntry));
+    }
+  }, [authUser]);
+
+  useEffect(() => {
+    syncAuditLog();
+  }, [syncAuditLog]);
+
+  // ── Handle login ────────────────────────────────────────────
+  const handleLogin = (user: AuthUser) => {
+    setAuthUser(user);
+    setRole(backendRoleToFrontend(user.role));
+    setBackendOnline(true);
+    showToast('Authenticated', `Signed in as ${user.name} (${user.role})`, 'success');
+    // Sync audit log after login
+    setTimeout(() => syncAuditLog(), 300);
+  };
+
+  // ── Utilities ───────────────────────────────────────────────
   const showToast = (title: string, desc: string, type: 'success' | 'warning' = 'success') => {
     setToastMessage({ title, desc, type });
     setTimeout(() => setToastMessage(null), 4000);
@@ -55,7 +149,7 @@ export default function App() {
     };
     setAuditLogs((prev) => [newEntry, ...prev]);
 
-    // Also sync to backend API if available
+    // Also sync to legacy Node API for backwards compat
     try {
       fetch('/api/audit-logs', {
         method: 'POST',
@@ -65,12 +159,12 @@ export default function App() {
     } catch {}
   };
 
-  // Handle region select
+  // ── Region select ───────────────────────────────────────────
   const handleSelectRegion = (region: RegionData) => {
     setSelectedRegion(region);
     addAuditLog({
       role,
-      actor: role === 'Administrator' ? 'Director Neel Sankhe' : role === 'Coordinator' ? 'Mukund Chaurasiya' : 'Dr. Shreya Wanjari',
+      actor: authUser?.name ?? (role === 'Administrator' ? 'Director Neel Sankhe' : role === 'Coordinator' ? 'Mukund Chaurasiya' : 'Dr. Shreya Wanjari'),
       action: `Queried Regional Telemetry: ${region.name}`,
       category: 'QUERY',
       regionId: region.id,
@@ -78,9 +172,11 @@ export default function App() {
       details: `Analyzed cross-modal probability vectors for ${region.name} (${region.code}). Peak vector: ${region.overallSeverity}.`,
       hash: `0x${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}`,
     });
+    // Trigger backend audit write via /py-api/regions/{id} (which auto-logs)
+    // This happens implicitly when RegionDetailCard calls the detail endpoint
   };
 
-  // Handle search result
+  // ── Search result ───────────────────────────────────────────
   const handleSearchResult = (regionId: string, explanation?: string) => {
     const region = regions.find((r) => r.id === regionId);
     if (region) {
@@ -93,7 +189,7 @@ export default function App() {
     }
   };
 
-  // Handle spoof detection event
+  // ── Spoof intercepted ───────────────────────────────────────
   const handleSpoofIntercepted = (logData: { action: string; details: string; status: 'BLOCKED' | 'WARNING'; hash: string }) => {
     addAuditLog({
       role: 'Administrator',
@@ -106,10 +202,27 @@ export default function App() {
       hash: logData.hash,
     });
     showToast('Intrusion Blocked', 'Tampered Sentinel-1 SAR raster tile intercepted and quarantined.', 'warning');
+    // Refresh audit log from backend to show server-persisted entries
+    setTimeout(() => syncAuditLog(), 500);
   };
 
-  // Handle public alert issue (Admin only)
-  const handleConfirmIssueAlert = (regionId: string, headline: string, instructions: string) => {
+  // ── Issue alert (now calls real backend) ───────────────────
+  const handleConfirmIssueAlert = async (regionId: string, headline: string, instructions: string) => {
+    // Attempt real backend call if we have auth
+    if (authUser && authUser.role === 'administrator') {
+      const primaryHazard = selectedRegion.primaryHazard;
+      const { alert, error } = await issueAlert(regionId, primaryHazard);
+      if (error) {
+        showToast('Alert Failed', error, 'warning');
+        return;
+      }
+      if (alert) {
+        showToast('Alert Issued (Server-Side)', `Alert ID: ${alert.id.substring(0, 8)}…`);
+        setTimeout(() => syncAuditLog(), 400);
+      }
+    }
+
+    // Update local state regardless
     setRegions((prev) =>
       prev.map((r) =>
         r.id === regionId
@@ -118,7 +231,7 @@ export default function App() {
               alertIssued: true,
               alertDetails: {
                 issuedAt: new Date().toISOString(),
-                issuedBy: `Director Neel Sankhe (${role})`,
+                issuedBy: authUser?.name ?? `Director Neel Sankhe (${role})`,
                 headline,
               },
             }
@@ -132,7 +245,7 @@ export default function App() {
 
     addAuditLog({
       role: 'Administrator',
-      actor: 'Director Neel Sankhe',
+      actor: authUser?.name ?? 'Director Neel Sankhe',
       action: `Issued Public Emergency Alert: ${selectedRegion.name}`,
       category: 'ALERT',
       regionId: selectedRegion.id,
@@ -144,11 +257,11 @@ export default function App() {
     showToast('Public Alert Broadcasted', `CAP 1.2 warning transmitted to ${selectedRegion.populationAtRisk.toLocaleString()} residents.`);
   };
 
-  // Handle tactical resource dispatch
+  // ── Resource dispatch ───────────────────────────────────────
   const handleDispatchResources = (regionName: string) => {
     addAuditLog({
       role,
-      actor: role === 'Coordinator' ? 'Mukund Chaurasiya' : 'Operations Dispatcher',
+      actor: authUser?.name ?? (role === 'Coordinator' ? 'Mukund Chaurasiya' : 'Operations Dispatcher'),
       action: `Dispatched Emergency Logistics: ${regionName}`,
       category: 'TELEMETRY',
       regionId: selectedRegion.id,
@@ -159,18 +272,38 @@ export default function App() {
     showToast('Logistics Dispatched', `Emergency assets routed to ${selectedRegion.resourceStaging.name}.`);
   };
 
-  // Force telemetry resync
+  // ── Refresh ─────────────────────────────────────────────────
   const handleRefreshData = () => {
     setIsRefreshing(true);
     setTimeout(() => {
       setIsRefreshing(false);
       showToast('Satellite Telemetry Synced', 'Ingested latest Sentinel-1, GPM IMERG, and MODIS downlinks.');
     }, 900);
+    syncAuditLog();
   };
 
   const toggleLayer = (layerKey: 'sarInundation' | 'radarRainfall' | 'thermalHotspots' | 'evacuationZones') => {
     setActiveLayers((prev) => ({ ...prev, [layerKey]: !prev[layerKey] }));
   };
+
+  // ── Role change (UI still shows switcher, real auth still governs) ──
+  const handleRoleChange = (newRole: UserRole) => {
+    setRole(newRole);
+    addAuditLog({
+      role: newRole,
+      actor: authUser?.name ?? (newRole === 'Administrator' ? 'Director Neel Sankhe' : newRole === 'Coordinator' ? 'Mukund Chaurasiya' : 'Dr. Shreya Wanjari'),
+      action: `Authorization Role Switched to ${newRole}`,
+      category: 'ROLE_CHANGE',
+      status: 'INFO',
+      details: `RBAC access state transitioned to ${newRole}. Permissions updated.`,
+      hash: `0x${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}`,
+    });
+  };
+
+  // ── Show login screen if not authenticated ──────────────────
+  if (!authUser) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
 
   return (
     <div className="h-screen w-screen bg-[#09090B] text-[#FAFAFA] flex flex-col overflow-hidden font-sans select-none">
@@ -179,21 +312,16 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         role={role}
-        setRole={(newRole) => {
-          setRole(newRole);
-          addAuditLog({
-            role: newRole,
-            actor: newRole === 'Administrator' ? 'Director Neel Sankhe' : newRole === 'Coordinator' ? 'Mukund Chaurasiya' : 'Dr. Shreya Wanjari',
-            action: `Authorization Role Switched to ${newRole}`,
-            category: 'ROLE_CHANGE',
-            status: 'INFO',
-            details: `RBAC access state transitioned to ${newRole}. Permissions updated.`,
-            hash: `0x${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}`,
-          });
-        }}
+        setRole={handleRoleChange}
         unreadAlertCount={regions.filter((r) => r.overallSeverity === 'CRITICAL').length}
         onOpenNotifications={() => setIsNotificationsModalOpen(true)}
         onOpenSettings={() => setIsSettingsModalOpen(true)}
+        authUser={authUser}
+        backendOnline={backendOnline}
+        onLogout={() => {
+          clearAuth();
+          setAuthUser(null);
+        }}
       />
 
       {/* Main Workspace Layout */}
@@ -242,10 +370,12 @@ export default function App() {
                 <SystemIntegrityCard
                   onSpoofIntercepted={handleSpoofIntercepted}
                   role={role}
+                  selectedRegionId={selectedRegion.id}
+                  backendOnline={backendOnline === true}
                 />
               </div>
 
-              {/* Mobile Floating Drawer / Toggle on Small Screens */}
+              {/* Mobile Floating Drawer */}
               <div className="md:hidden absolute bottom-2 left-2 right-2 z-30 max-h-72 overflow-y-auto space-y-2">
                 <RegionDetailCard
                   region={selectedRegion}
@@ -256,6 +386,8 @@ export default function App() {
                 <SystemIntegrityCard
                   onSpoofIntercepted={handleSpoofIntercepted}
                   role={role}
+                  selectedRegionId={selectedRegion.id}
+                  backendOnline={backendOnline === true}
                 />
               </div>
             </div>

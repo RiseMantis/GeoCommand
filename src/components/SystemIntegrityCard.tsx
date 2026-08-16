@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Shield, ShieldAlert, ShieldCheck, Radio, RefreshCw, Terminal, CheckCircle2, AlertOctagon } from 'lucide-react';
 import { UserRole } from '../types';
+import { injectSpoofDemo } from '../api';
 
 interface SystemIntegrityCardProps {
   onSpoofIntercepted: (logDetails: {
@@ -10,11 +11,15 @@ interface SystemIntegrityCardProps {
     hash: string;
   }) => void;
   role: UserRole;
+  selectedRegionId?: string;
+  backendOnline?: boolean;
 }
 
 export const SystemIntegrityCard: React.FC<SystemIntegrityCardProps> = ({
   onSpoofIntercepted,
   role,
+  selectedRegionId = 'kali-basin',
+  backendOnline = false,
 }) => {
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<string[]>([
@@ -27,12 +32,40 @@ export const SystemIntegrityCard: React.FC<SystemIntegrityCardProps> = ({
     terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
-  const handleSimulateSpoofedTile = () => {
+  const handleSimulateSpoofedTile = async () => {
     if (isRunning) return;
     setIsRunning(true);
     setSpoofStatus('running');
     setLogs(['>> Initiating test payload: Injecting spoofed SAR tile (S1-INU-442)...']);
 
+    // ── Real backend path ──────────────────────────────────────
+    if (backendOnline) {
+      const result = await injectSpoofDemo(selectedRegionId);
+      if (result) {
+        // Animate through the server-returned steps
+        result.steps.forEach((step, index) => {
+          setTimeout(() => {
+            setLogs((prev) => [...prev, `>> ${step.message}`]);
+
+            if (index === result.steps.length - 1) {
+              setIsRunning(false);
+              setSpoofStatus('blocked');
+              onSpoofIntercepted({
+                action: 'Blocked Spoofed SAR Satellite Tile (S1-INU-442)',
+                details: `Intercepted malicious SAR tile suppressing flood inundation from ${result.actual_value} down to ${result.claimed_value}. Server-side hash mismatch (${result.tile_hash}) and rainfall physics correlation failed. Restored baseline feed. Event: ${result.spoof_event_id.substring(0, 8)}.`,
+                status: 'BLOCKED',
+                hash: `0x${result.spoof_event_id.replace(/-/g, '').substring(0, 16)}`,
+              });
+            }
+          }, index * 900);
+        });
+        return;
+      }
+      // Fall through to client-side simulation if backend call failed
+      setLogs((prev) => [...prev, '>> Backend response error — running local simulation...']);
+    }
+
+    // ── Client-side fallback simulation ───────────────────────
     const steps = [
       { delay: 800, text: '>> [STAGE 1] Checking file SHA-256 against ESA Copernicus manifest... ⚠️ MISMATCH' },
       { delay: 1600, text: '>> [STAGE 2] Cross-checking against GPM IMERG rainfall record... ❌ IMPLAUSIBLE (Rainfall >90th percentile cannot yield 12% SAR inundation)' },
@@ -72,11 +105,21 @@ export const SystemIntegrityCard: React.FC<SystemIntegrityCardProps> = ({
         <div className="flex items-center space-x-2">
           <span className="text-xs font-bold uppercase tracking-widest text-zinc-400 font-mono-code">System Integrity</span>
         </div>
-        <div className="flex items-center space-x-1.5 text-zinc-400">
-          <Shield className={`w-3.5 h-3.5 ${spoofStatus === 'blocked' ? 'text-emerald-400' : 'text-blue-400'}`} />
-          <span className={`text-[10px] font-mono-code font-bold ${spoofStatus === 'blocked' ? 'text-emerald-400' : 'text-blue-400'}`}>
-            {spoofStatus === 'blocked' ? 'VERIFIED' : 'ACTIVE'}
+        <div className="flex items-center space-x-2">
+          {/* Backend indicator */}
+          <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-full border ${
+            backendOnline
+              ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-400'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-600'
+          }`}>
+            {backendOnline ? 'SERVER' : 'LOCAL'}
           </span>
+          <div className="flex items-center space-x-1.5 text-zinc-400">
+            <Shield className={`w-3.5 h-3.5 ${spoofStatus === 'blocked' ? 'text-emerald-400' : 'text-blue-400'}`} />
+            <span className={`text-[10px] font-mono-code font-bold ${spoofStatus === 'blocked' ? 'text-emerald-400' : 'text-blue-400'}`}>
+              {spoofStatus === 'blocked' ? 'VERIFIED' : 'ACTIVE'}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -110,12 +153,14 @@ export const SystemIntegrityCard: React.FC<SystemIntegrityCardProps> = ({
       <div className="bg-[#09090B] border border-[#27272A] rounded-xl p-3 h-36 overflow-y-auto font-mono-code text-[11px] space-y-1.5 terminal-glow select-text">
         {logs.map((log, index) => {
           let textColor = 'text-zinc-400';
-          if (log.includes('MISMATCH') || log.includes('IMPLAUSIBLE') || log.includes('STAGE')) {
+          if (log.includes('MISMATCH') || log.includes('IMPLAUSIBLE') || log.includes('STAGE') || log.includes('STAGE')) {
             textColor = 'text-rose-400 font-semibold';
-          } else if (log.includes('neutralized') || log.includes('PRESERVED') || log.includes('Restoring') || log.includes('Threat')) {
+          } else if (log.includes('neutralized') || log.includes('PRESERVED') || log.includes('Restoring') || log.includes('Threat') || log.includes('committed')) {
             textColor = 'text-emerald-400 font-semibold';
           } else if (log.includes('Initiating') || log.includes('Injecting')) {
             textColor = 'text-amber-400';
+          } else if (log.includes('error') || log.includes('REJECTED') || log.includes('Rejecting')) {
+            textColor = 'text-rose-400 font-semibold';
           }
 
           return (
@@ -132,7 +177,7 @@ export const SystemIntegrityCard: React.FC<SystemIntegrityCardProps> = ({
         <div className="px-3 py-2 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-[11px] text-emerald-200 flex items-center space-x-2 animate-in fade-in duration-200 shadow-lg">
           <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
           <span className="font-semibold">
-            Spoofed data blocked — authentic SAR data restored
+            Spoofed data blocked — authentic SAR data restored{backendOnline ? ' (server-persisted)' : ''}
           </span>
         </div>
       )}
