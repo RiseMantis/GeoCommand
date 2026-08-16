@@ -229,7 +229,7 @@ export const MapView: React.FC<MapViewProps> = ({
   }, [regions, selectedRegion, hazardFilter, activeLayers]);
 
   return (
-    <div className="w-full h-full relative overflow-hidden bg-[#09090B]">
+    <div className="w-full h-full relative overflow-hidden bg-[#09090B] z-0">
       <div ref={mapContainerRef} className="w-full h-full" />
     </div>
   );
