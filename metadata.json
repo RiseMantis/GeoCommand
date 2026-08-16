@@ -1,0 +1,6 @@
+{
+  "name": "GEO-COMMAND: Disaster Prediction & Early Warning Platform",
+  "description": "Cross-modal satellite data fusion for multi-hazard disaster prediction, threat detection, and early warning response.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
